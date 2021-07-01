@@ -28,7 +28,7 @@ nAge=2;
 
 
 ic=<|
-	"S"->{99,49},
+	"S"->{99,50},
 	"I1"->{1,0}
 |>;
 parameters=<|
@@ -39,6 +39,9 @@ parameters=<|
 	\[Omega]->1/100,
 	\[Nu]->1/10
 |>;
+contactMatrix=
+{{2.4, 5.3},
+ {1.2, 4.1}}/{100,50};
 
 
 (* ::Subsection::Closed:: *)
@@ -324,6 +327,13 @@ Function[
 ];
 
 
+(*Population vector*)
+pop=Total[Values[ic]];
+popSym=Table["p"<>ToString[i],{i,Range[nAge]}];
+(*Contact matrix with symbolic values*)
+contactMatrixSym=Table["c"<>ToString[i]<>ToString[j],{i,Range[nAge]},{j,Range[nAge]}];
+
+
 (*
 Function return with merged list of differential equations and initial condition equalities
 *)
@@ -338,8 +348,14 @@ Module[{},
 	*)
 	Table[
 		Module[{},
-			RHS[comp]-=Sum[If[p[comp->to][[0]]===String,ToExpression[p[comp->to]],p[comp->to]]*c[comp],{to,outVerticesFull[comp]}];
-			RHS[comp]+=Sum[If[p[from->comp][[0]]===String,ToExpression[p[from->comp]],p[from->comp]]*c[from],{from,inVerticesFull[comp]}];
+			RHS[comp]-=Sum[If[p[comp->to][[0]]===String,
+							  ToExpression[p[comp->to]] . contactMatrixSym/popSym,
+							  p[comp->to]
+						   ]*c[comp],{to,outVerticesFull[comp]}];
+			RHS[comp]+=Sum[If[p[from->comp][[0]]===String,
+							  ToExpression[p[from->comp]] . contactMatrixSym/popSym,
+							  p[from->comp]
+						   ]*c[from],{from,inVerticesFull[comp]}];
 			If[MemberQ[Keys[ic],comp],IC[comp]=ic[comp],IC[comp]=ConstantArray[0,nAge]];
 		],
 		{comp,verticesFull}];
@@ -361,8 +377,12 @@ fullTransitionGraph
 ode//TableForm
 
 
-paramPattern=Thread[Keys[parameters]->Values[parameters]];
+paramPattern=Join[
+	Thread[Keys[parameters]->Values[parameters]],
+	Thread[Flatten[contactMatrixSym]->Flatten[contactMatrix]],
+	Thread[popSym->pop]
+];
 Plot[
-	Evaluate[{S2[t],I11[t]}/.NDSolve[ode/.paramPattern,vars,{t,0,10}][[1]]],
+	Evaluate[{S1[t],E11[t]}/.NDSolve[ode/.paramPattern,vars,{t,0,10}][[1]]],
 	{t,0,10}
 ]
