@@ -24,11 +24,12 @@ chains=<|
 	"E"->3,
 	"I"->2
 |>;
+nAge=2;
 
 
 ic=<|
-	"S"->99,
-	"I1"->1
+	"S"->{99,49},
+	"I1"->{1,0}
 |>;
 parameters=<|
 	\[Beta]->0.5, 
@@ -115,7 +116,7 @@ Flatten[ReplacePart[vertices,
 The following changes have to be applied for edge list of simplified transition graph
 due to linear chain trick:
 - inward edge ? -> X is changed to ? -> X1
-- outward edge X -> ? is changed to Xn -> ? (n is the length of the chain for component X)
+- outward edge X -> ? is changed to Xn -> ? (n is the length of the chain for compartment X)
 *)
 positionsToChange=
 Join[
@@ -189,24 +190,25 @@ Graph[
 ]
 
 
-(* ::Subsection:: *)
+(* ::Subsection::Closed:: *)
 (*Generate model equations*)
 
 
 (*
-Create list for transmissions in the full transition graph (i.e. all components of a chain affect the transmission) 
+Create list for transmissions in the full transition graph (i.e. all compartments of a chain affect the transmission) 
 *)
 transmissionsFull=
 Flatten[Table[
-	If[MemberQ[Keys[chains],tr[[1]]],Table[{tr[[1]]<>ToString[i],tr[[2]],tr[[3]]<>ToString[1],tr[[4]]},{i,Range[chains[tr[[1]]]]}],tr],
+	If[MemberQ[Keys[chains],tr[[1]]],Table[{tr[[1]]<>ToString[i],tr[[2]],tr[[3]]<>ToString[1],tr[[4]]},
+									    {i,Range[chains[tr[[1]]]]}],tr],
 	{tr,transmissions}
 ],1];
 
 
 (*
-Create association, where 
-- keys are the directed edges, 
-- values are the edge weights
+Association:
+- key: directed edge, 
+- value: edge weight
 *)
 p=
 Association[
@@ -219,47 +221,75 @@ Table[
 	p[transmissionsFull[[eIdx,2]]->transmissionsFull[[eIdx,3]]]="",
 	{eIdx,Length[transmissionsFull]}];
 (*
+List for storing compartment functions in string format
+*)
+trFullAgeInf=
+If[nAge>1, 
+   Table[ToString[tr[[1]]]<>ToString[a]<>"[t]",{tr,transmissionsFull},{a,Range[nAge]}],
+   Table[ToString[tr[[1]]]<>"[t]",{tr,transmissionsFull}]
+];
+(*
 Loop for determining edge weights for transmissions
 *)
 Table[
 	p[transmissionsFull[[eIdx,2]]->transmissionsFull[[eIdx,3]]]=
 		p[transmissionsFull[[eIdx,2]]->transmissionsFull[[eIdx,3]]] <> "+" <> 
 		ToString[transmissionsFull[[eIdx,4]]] <> "*" <> (*transmission rate*)
-		ToString[transmissionsFull[[eIdx,1]]] <> "[t]", (*infective compartment*)
+		ToString[trFullAgeInf[[eIdx]]], (*infective compartment*)
 	{eIdx,Length[transmissionsFull]}];
 
 
+Options[CompartmentIndexing] = {"Indexing" -> "Numeric", "IndexSet" -> {}};
+
+CompartmentIndexing[comps_, dim_, OptionsPattern[]] := (
+	indices = Switch[OptionValue["Indexing"],
+		"Numeric", Range[dim], 
+		"Alphabetic", Map[Function[n, FromLetterNumber[n]], Range[dim]],
+		"Custom", Take[OptionValue["IndexSet"], dim],
+		_, Throw["Invalid option for <Indexing>"]];
+	Association[Table[
+		ToString[comp] ->  Map[
+			Function[idx, 
+				Symbol[ToString[comp] <> ToString[idx] ]], 
+			indices], 
+		{comp, comps}]
+	]
+)
+
+
 (*
 Association:
-- key: component name (from verticesFull)
-- value: component symbol
+- key: compartment name (from verticesFull)
+- value: compartment symbol
+Compartment naming:
+- Xn: nth age group of compartment X (no linear chain)
+- Xmn: mth chain vertex and nth age group of compartment X
 *)
-AllComp=
-Association[Table[comp->{Symbol[comp]},{comp,verticesFull}]];
+AllComp=CompartmentIndexing[verticesFull,nAge];
 (*
 Association:
-- key: component name (from Keys[AllComp])
-- value: component time function
+- key: compartment name
+- value: compartment time function
 *)
 c=
 Association[
 	Table[comp->Map[Function[x, x[t]],AllComp[comp]],{comp,Keys[AllComp]}]
 ];
 (*
-List of component time functions = variables
+List of compartments = variables
 *)
 vars=Flatten[Values[AllComp]];
 
 
 (*
 Association
-- key: component name
+- key: compartment name
 - value: LHS of initial condition equality
 *)
 icLHS=
 Association[
 	Table[
-		comp->Map[Function[x, x[ t/;t<=0]],AllComp[comp]],
+		comp->Map[Function[x, x[t/;t<=0]],AllComp[comp]],
 		{comp,Keys[AllComp]}]
 ];
 icLHSList=Flatten[Values[icLHS]];
@@ -267,8 +297,8 @@ icLHSList=Flatten[Values[icLHS]];
 
 (*
 Association:
-- key: component name
-- value: derivative of the component function (symbolic)
+- key: compartment name
+- value: derivative of the compartment function (symbolic)
 *)
 LHS=
 Association[
@@ -280,7 +310,7 @@ LHSList=Flatten[Values[LHS]];
 
 
 (*
-Function for collecting vertices of inward/outward edges for a component 
+Function for collecting vertices of inward/outward edges for a compartment 
 *)
 outVerticesFull=
 Function[
@@ -310,7 +340,7 @@ Module[{},
 		Module[{},
 			RHS[comp]-=Sum[If[p[comp->to][[0]]===String,ToExpression[p[comp->to]],p[comp->to]]*c[comp],{to,outVerticesFull[comp]}];
 			RHS[comp]+=Sum[If[p[from->comp][[0]]===String,ToExpression[p[from->comp]],p[from->comp]]*c[from],{from,inVerticesFull[comp]}];
-			If[MemberQ[Keys[ic],comp],IC[comp]=ic[comp],IC[comp]=0];
+			If[MemberQ[Keys[ic],comp],IC[comp]=ic[comp],IC[comp]=ConstantArray[0,nAge]];
 		],
 		{comp,verticesFull}];
 	RHSList=Flatten[Values[RHS]];
@@ -333,6 +363,6 @@ ode//TableForm
 
 paramPattern=Thread[Keys[parameters]->Values[parameters]];
 Plot[
-	Evaluate[{S[t],I1[t]}/.NDSolve[ode/.paramPattern,vars,{t,0,10}][[1]]],
+	Evaluate[{S2[t],I11[t]}/.NDSolve[ode/.paramPattern,vars,{t,0,10}][[1]]],
 	{t,0,10}
 ]
