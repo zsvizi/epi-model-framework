@@ -5,26 +5,46 @@
 (*Epidemic modelling framework*)
 
 
-(* ::Subsection::Closed:: *)
+(* ::Subsection:: *)
 (*Input*)
 
 
 susceptible="S";
+(*
+Transition: {from, to, param, normalizer [optional]}
+At transition, default normalizer = 1
+*)
 transitions={
 	{"E","I", \[Alpha]},
 	{"I","R", \[Gamma]},
-	{"S","V",\[Nu]},
+	{"S","V",\[Nu],{"S","E","R"}},
 	{"R","S",\[Omega]}
 };
+(*
+Transmission: {infective, to be infected, changes to, param, normalizer [optional]}
+At transmission, default normalizer = population
+*)
 transmissions={
 	{"I","S","E",\[Beta]},
-	{"I","V","E",\[Tau]*\[Beta]}
+	{"I","V","E",\[Tau]*\[Beta],{"S","E","I","R","V"}}
 };
+(*
+Change these values, if structure for transition/transmission changes
+- t=transition, tr=transmission
+- F=from, T=to, P=param, N=normalizer, I=infective
+*)
+tF=1; tT=2; tP=3; tN=4;
+trI=1; trF=2;trT=3;trP=4;trN=5;
+
+
 chains=<|
 	"E"->3,
 	"I"->2
 |>;
 nAge=2;
+contactMatrix=
+{{2.4, 5.3},
+ {1.2, 4.1}}/{100,50};
 
 
 ic=<|
@@ -32,16 +52,13 @@ ic=<|
 	"I1"->{1,0}
 |>;
 parameters=<|
-	\[Beta]->0.5, 
+	\[Beta]->0.1, 
 	\[Alpha]->1/5.0, 
 	\[Gamma]->1/4.0,
 	\[Tau]->0.5,
 	\[Omega]->1/100,
-	\[Nu]->1/10
+	\[Nu]->1
 |>;
-contactMatrix=
-{{2.4, 5.3},
- {1.2, 4.1}}/{100,50};
 
 
 (* ::Subsection::Closed:: *)
@@ -50,23 +67,30 @@ contactMatrix=
 
 vertices=
 DeleteDuplicates[Join[
-	DeleteDuplicates[Flatten[transitions[[All,1;;2]]]],
-	DeleteDuplicates[Flatten[transmissions[[All,1;;3]]]]
+	DeleteDuplicates[Flatten[transitions[[All,tF;;tT]]]],
+	DeleteDuplicates[Flatten[transmissions[[All,trI;;trT]]]]
 ]];
 
 
 edges=
 Join[
-	DeleteDuplicates[Map[Function[v,v[[1]]->v[[2]]],transitions]],
-	DeleteDuplicates[Map[Function[v,v[[2]]->v[[3]]],transmissions]]
+	DeleteDuplicates[Map[Function[v,v[[tF]]->v[[tT]]],transitions]],
+	DeleteDuplicates[Map[Function[v,v[[trF]]->v[[trT]]],transmissions]]
 ];
 
 
 edgeWeights=
 Join[
-	DeleteDuplicates[Flatten[transitions[[All,3]]]],
-	DeleteDuplicates[Flatten[transmissions[[All,4]]]]
+	DeleteDuplicates[Flatten[transitions[[All,tP]]]],
+	DeleteDuplicates[Flatten[transmissions[[All,trP]]]]
 ];
+
+
+edgeWeightsAssoc=
+Association[Join[
+	Thread[transitions[[All,tF;;tT]]->transitions[[All,tP;;All]]],
+	Thread[transmissions[[All,trF;;trT]]->transmissions[[All,trP;;All]]]
+]];
 
 
 simplifiedTransitionGraph=Graph[
@@ -80,6 +104,15 @@ simplifiedTransitionGraph=Graph[
 
 (* ::Subsection::Closed:: *)
 (*Generate graph with chains*)
+
+
+simpleToFull=
+Association[Table[
+	If[MemberQ[Keys[chains],comp],
+	   comp->Table[comp<>ToString[idx],{idx,Range[chains[comp]]}],
+	   comp->{comp}
+	],
+{comp, vertices}]];
 
 
 (*
@@ -142,24 +175,24 @@ Join[
 1. Apply previously determined changes to the edge list.
 2. Add new directed edges of the chains
 *)
+changedEdges=
+ReplacePart[edges,
+	Thread[
+		positionsToChange->
+		Flatten[Join[
+			Table[comp<>ToString[1],{comp, Keys[chains]},{x,Range[Length[inVertices[comp]]]}],
+			Table[comp<>ToString[chains[comp]],{comp, Keys[chains]},{x,Range[Length[outVertices[comp]]]}]
+		]]
+	]
+];
 edgesFull=
 Flatten[Join[
-	ReplacePart[edges,
-		Thread[
-			positionsToChange->
-			Flatten[Join[
-				Table[comp<>ToString[1],{comp, Keys[chains]},{x,Range[Length[inVertices[comp]]]}],
-				Table[comp<>ToString[chains[comp]],{comp, Keys[chains]},{x,Range[Length[outVertices[comp]]]}]
-			]]
-		]
-	],
+	changedEdges,
 	Flatten[Table[comp<>ToString[i-1]->comp<>ToString[i],{comp,Keys[chains]},{i,Range[2,chains[comp]]}]]
 ]];
 
 
-(*
-Find edges, where weights has to be changed
-*)
+(*Find edges, where weights has to be changed*)
 positionsToChange=
 Map[
 	Function[x, {Position[edges,x][[1,1]]}],
@@ -172,15 +205,23 @@ Map[
 2. Add weight for newly added directed edges
 *)
 ];
+changedEdgeWeights=
+ReplacePart[edgeWeights,
+	Thread[
+		positionsToChange->
+		Flatten[Table[chains[comp]*edgeWeights[[Position[vertices,comp][[1,1]]]],{comp, Keys[chains]},{x,Range[Length[outVertices[comp]]]}]]]
+];
 edgeWeightsFull=
 Flatten[Join[
-	ReplacePart[edgeWeights,
-		Thread[
-			positionsToChange->
-			Flatten[Table[chains[comp]*edgeWeights[[Position[vertices,comp][[1,1]]]],{comp, Keys[chains]},{x,Range[Length[outVertices[comp]]]}]]]
-	],
+	changedEdgeWeights,
 	Flatten[Table[chains[comp]*edgeWeights[[Position[vertices,comp][[1,1]]]],{comp,Keys[chains]},{i,Range[2,chains[comp]]}]]
 ]];
+
+
+edgeWeightsFullAssoc=
+Association[
+	Thread[Thread[{Keys[changedEdges],Values[changedEdges]}]->Values[edgeWeightsAssoc]]
+];
 
 
 fullTransitionGraph=
@@ -197,13 +238,17 @@ Graph[
 (*Generate model equations*)
 
 
-(*
-Create list for transmissions in the full transition graph (i.e. all compartments of a chain affect the transmission) 
-*)
+(*Create list for transmissions in the full transition graph (i.e. all compartments of a chain affect the transmission) *)
 transmissionsFull=
 Flatten[Table[
-	If[MemberQ[Keys[chains],tr[[1]]],Table[{tr[[1]]<>ToString[i],tr[[2]],tr[[3]]<>ToString[1],tr[[4]]},
-									    {i,Range[chains[tr[[1]]]]}],tr],
+	If[MemberQ[Keys[chains],tr[[1]]],
+	   Table[Module[{},
+	          trTemp=tr;
+	          trTemp[[1]]=tr[[1]]<>ToString[i];
+	          trTemp[[3]]=tr[[3]]<>ToString[1];
+	          trTemp
+	   ],{i,Range[chains[tr[[1]]]]}],
+	   tr],
 	{tr,transmissions}
 ],1];
 
@@ -217,23 +262,17 @@ p=
 Association[
 	Table[edgesFull[[eIdx]]->edgeWeightsFull[[eIdx]],{eIdx,Length[edgesFull]}]
 ];
-(*
-Loop for initializing edge weights for transmissions
-*)
+(*Loop for initializing edge weights for transmissions*)
 Table[
 	p[transmissionsFull[[eIdx,2]]->transmissionsFull[[eIdx,3]]]="",
 	{eIdx,Length[transmissionsFull]}];
-(*
-List for storing compartment functions in string format
-*)
+(*List for storing compartment functions in string format*)
 trFullAgeInf=
 If[nAge>1, 
    Table[ToString[tr[[1]]]<>ToString[a]<>"[t]",{tr,transmissionsFull},{a,Range[nAge]}],
    Table[ToString[tr[[1]]]<>"[t]",{tr,transmissionsFull}]
 ];
-(*
-Loop for determining edge weights for transmissions
-*)
+(*Loop for determining edge weights for transmissions*)
 Table[
 	p[transmissionsFull[[eIdx,2]]->transmissionsFull[[eIdx,3]]]=
 		p[transmissionsFull[[eIdx,2]]->transmissionsFull[[eIdx,3]]] <> "+" <> 
@@ -278,9 +317,7 @@ c=
 Association[
 	Table[comp->Map[Function[x, x[t]],AllComp[comp]],{comp,Keys[AllComp]}]
 ];
-(*
-List of compartments = variables
-*)
+(*List of compartments = variables*)
 vars=Flatten[Values[AllComp]];
 
 
@@ -312,9 +349,7 @@ Association[
 LHSList=Flatten[Values[LHS]];
 
 
-(*
-Function for collecting vertices of inward/outward edges for a compartment 
-*)
+(*Function for collecting vertices of inward/outward edges for a compartment *)
 outVerticesFull=
 Function[
 	x,
@@ -335,8 +370,21 @@ contactMatrixSym=Table["c"<>ToString[i]<>ToString[j],{i,Range[nAge]},{j,Range[nA
 
 
 (*
-Function return with merged list of differential equations and initial condition equalities
+Normalizer for transitions and transmissions
+- returns 1/popSym, if there is no specified normalizer for the input transition/transmission
+- returns sum of compartment functions, otherwise
 *)
+normalizer=
+Function[
+	{edge,type},
+	Module[{trParam},
+		trParam=If[MemberQ[Keys[edgeWeightsFullAssoc],{edge[[1]],edge[[2]]}],edgeWeightsFullAssoc[{edge[[1]],edge[[2]]}],{}];
+		If[Length[trParam]>1,Sum[c[compFull],{compTr,trParam[[2]]},{compFull,simpleToFull[compTr]}],If[type=="transmission",popSym,1]]
+	]
+];
+
+
+(*Function return with merged list of differential equations and initial condition equalities*)
 ode:=
 Module[{},
 	RHS=Association[Table[comp->0,{comp,Keys[AllComp]}]];
@@ -349,13 +397,13 @@ Module[{},
 	Table[
 		Module[{},
 			RHS[comp]-=Sum[If[p[comp->to][[0]]===String,
-							  ToExpression[p[comp->to]] . contactMatrixSym/popSym,
-							  p[comp->to]
-						   ]*c[comp],{to,outVerticesFull[comp]}];
+							  ToExpression[p[comp->to]] . contactMatrixSym*c[comp]/normalizer[comp->to,"transmission"],
+							  p[comp->to]*c[comp]/normalizer[comp->to,"transition"]],
+						   {to,outVerticesFull[comp]}];
 			RHS[comp]+=Sum[If[p[from->comp][[0]]===String,
-							  ToExpression[p[from->comp]] . contactMatrixSym/popSym,
-							  p[from->comp]
-						   ]*c[from],{from,inVerticesFull[comp]}];
+							  ToExpression[p[from->comp]] . contactMatrixSym*c[from]/normalizer[from->comp,"transmission"],
+							  p[from->comp]*c[from]/normalizer[from->comp,"transition"]],
+						   {from,inVerticesFull[comp]}];
 			If[MemberQ[Keys[ic],comp],IC[comp]=ic[comp],IC[comp]=ConstantArray[0,nAge]];
 		],
 		{comp,verticesFull}];
@@ -383,6 +431,6 @@ paramPattern=Join[
 	Thread[popSym->pop]
 ];
 Plot[
-	Evaluate[{S1[t],E11[t]}/.NDSolve[ode/.paramPattern,vars,{t,0,10}][[1]]],
+	Evaluate[{S1[t],I11[t]}/.NDSolve[ode/.paramPattern,vars,{t,0,10}][[1]]],
 	{t,0,10}
 ]
