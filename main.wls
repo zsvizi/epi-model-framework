@@ -78,11 +78,19 @@ simplifiedTransitionGraph=Graph[
 (*Generate graph with chains*)
 
 
+(*
+Function to get vertices connected with outward edges
+from the simplified transition graph
+*)
 outVertices=
 Function[
 	x,
 	VertexOutComponent[simplifiedTransitionGraph,x,1][[2;;]]
 ];
+(*
+Function to get vertices connected with inward edges
+from the simplified transition graph
+*)
 inVertices=
 Function[
 	x,
@@ -90,6 +98,10 @@ Function[
 ];
 
 
+(*
+Extend list of verticies for compartments, 
+where linear chain trick is used
+*)
 verticesFull=
 Flatten[ReplacePart[vertices,
 	Thread[
@@ -99,6 +111,12 @@ Flatten[ReplacePart[vertices,
 ]];
 
 
+(*
+The following changes have to be applied for edge list of simplified transition graph
+due to linear chain trick:
+- inward edge ? -> X is changed to ? -> X1
+- outward edge X -> ? is changed to Xn -> ? (n is the length of the chain for component X)
+*)
 positionsToChange=
 Join[
 	Map[
@@ -116,6 +134,10 @@ Join[
 		]]
 	]
 ];
+(*
+1. Apply previously determined changes to the edge list.
+2. Add new directed edges of the chains
+*)
 edgesFull=
 Flatten[Join[
 	ReplacePart[edges,
@@ -131,6 +153,9 @@ Flatten[Join[
 ]];
 
 
+(*
+Find edges, where weights has to be changed
+*)
 positionsToChange=
 Map[
 	Function[x, {Position[edges,x][[1,1]]}],
@@ -138,6 +163,10 @@ Map[
 		Function[comp,If[Length[outVertices[comp]]>0, Thread[comp -> outVertices[comp]],Nothing]],
 		Keys[chains]
 	]]
+(*
+1. Apply changes for previously determined weights
+2. Add weight for newly added directed edges
+*)
 ];
 edgeWeightsFull=
 Flatten[Join[
@@ -160,10 +189,13 @@ Graph[
 ]
 
 
-(* ::Subsection::Closed:: *)
+(* ::Subsection:: *)
 (*Generate model equations*)
 
 
+(*
+Create list for transmissions in the full transition graph (i.e. all components of a chain affect the transmission) 
+*)
 transmissionsFull=
 Flatten[Table[
 	If[MemberQ[Keys[chains],tr[[1]]],Table[{tr[[1]]<>ToString[i],tr[[2]],tr[[3]]<>ToString[1],tr[[4]]},{i,Range[chains[tr[[1]]]]}],tr],
@@ -171,54 +203,85 @@ Flatten[Table[
 ],1];
 
 
+(*
+Create association, where 
+- keys are the directed edges, 
+- values are the edge weights
+*)
 p=
 Association[
 	Table[edgesFull[[eIdx]]->edgeWeightsFull[[eIdx]],{eIdx,Length[edgesFull]}]
 ];
+(*
+Loop for initializing edge weights for transmissions
+*)
 Table[
 	p[transmissionsFull[[eIdx,2]]->transmissionsFull[[eIdx,3]]]="",
 	{eIdx,Length[transmissionsFull]}];
+(*
+Loop for determining edge weights for transmissions
+*)
 Table[
-	p[transmissionsFull[[eIdx,2]]->transmissionsFull[[eIdx,3]]]=p[transmissionsFull[[eIdx,2]]->transmissionsFull[[eIdx,3]]]<>"+"<>
-		ToString[transmissionsFull[[eIdx,4]]]<>"*"<>ToString[transmissionsFull[[eIdx,1]]]<>"[t]",
+	p[transmissionsFull[[eIdx,2]]->transmissionsFull[[eIdx,3]]]=
+		p[transmissionsFull[[eIdx,2]]->transmissionsFull[[eIdx,3]]] <> "+" <> 
+		ToString[transmissionsFull[[eIdx,4]]] <> "*" <> (*transmission rate*)
+		ToString[transmissionsFull[[eIdx,1]]] <> "[t]", (*infective compartment*)
 	{eIdx,Length[transmissionsFull]}];
 
 
+(*
+Association:
+- key: component name (from verticesFull)
+- value: component symbol
+*)
 AllComp=
 Association[Table[comp->{Symbol[comp]},{comp,verticesFull}]];
-
-
+(*
+Association:
+- key: component name (from Keys[AllComp])
+- value: component time function
+*)
 c=
 Association[
 	Table[comp->Map[Function[x, x[t]],AllComp[comp]],{comp,Keys[AllComp]}]
 ];
-
-
+(*
+List of component time functions = variables
+*)
 vars=Flatten[Values[AllComp]];
 
 
+(*
+Association
+- key: component name
+- value: LHS of initial condition equality
+*)
 icLHS=
 Association[
 	Table[
 		comp->Map[Function[x, x[ t/;t<=0]],AllComp[comp]],
 		{comp,Keys[AllComp]}]
 ];
-
-
 icLHSList=Flatten[Values[icLHS]];
 
 
+(*
+Association:
+- key: component name
+- value: derivative of the component function (symbolic)
+*)
 LHS=
 Association[
 	Table[
 		comp->Map[Function[x, x'[t]],AllComp[comp]],
 		{comp,Keys[AllComp]}]
 ];
-
-
 LHSList=Flatten[Values[LHS]];
 
 
+(*
+Function for collecting vertices of inward/outward edges for a component 
+*)
 outVerticesFull=
 Function[
 	x,
@@ -231,14 +294,22 @@ Function[
 ];
 
 
+(*
+Function return with merged list of differential equations and initial condition equalities
+*)
 ode:=
 Module[{},
 	RHS=Association[Table[comp->0,{comp,Keys[AllComp]}]];
 	IC=Association[Table[comp->0,{comp,Keys[icLHS]}]];
+	(*
+	Loop for filling RHS of equations and IC equalities
+	- transmissions "rates" are stored as String (e.g. "\[Beta]*I[t]")
+	- simple transitions are stored as Expression (e.g. 3*\[Alpha])
+	*)
 	Table[
 		Module[{},
-			RHS[comp]=RHS[comp]-Sum[If[p[comp->to][[0]]===String,ToExpression[p[comp->to]],p[comp->to]]*c[comp],{to,outVerticesFull[comp]}];
-			RHS[comp]=RHS[comp]+Sum[If[p[from->comp][[0]]===String,ToExpression[p[from->comp]],p[from->comp]]*c[from],{from,inVerticesFull[comp]}];
+			RHS[comp]-=Sum[If[p[comp->to][[0]]===String,ToExpression[p[comp->to]],p[comp->to]]*c[comp],{to,outVerticesFull[comp]}];
+			RHS[comp]+=Sum[If[p[from->comp][[0]]===String,ToExpression[p[from->comp]],p[from->comp]]*c[from],{from,inVerticesFull[comp]}];
 			If[MemberQ[Keys[ic],comp],IC[comp]=ic[comp],IC[comp]=0];
 		],
 		{comp,verticesFull}];
@@ -252,6 +323,9 @@ Module[{},
 
 (* ::Subsection:: *)
 (*Example*)
+
+
+fullTransitionGraph
 
 
 ode//TableForm
